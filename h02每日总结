@@ -1,0 +1,313 @@
+import sys
+from PyQt5.QtWidgets import QApplication, QWidget, QLineEdit, QPushButton, QMessageBox, QDateEdit
+from configparser import ConfigParser
+import requests
+from datetime import datetime, timedelta
+from openpyxl import Workbook
+import os
+import json
+from openpyxl.reader.excel import load_workbook
+import pytz
+
+
+class LoginWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.initUI()
+
+        # 设置允许使用的截止时间 (YYYY-MM-DD HH:MM:SS)
+        self.expiration_date_str = "2027-03-11 23:59:59"  # 软件过期时间
+        self.expiration_date = datetime.strptime(self.expiration_date_str, "%Y-%m-%d %H:%M:%S")
+
+        # 检查是否需要提醒
+        remaining_days = self.get_remaining_days()
+        if remaining_days > 0 and remaining_days <= 7:
+            QMessageBox.warning(self, "软件即将更新",
+                                f"本软件将在{remaining_days}天后自动更新：\n请联系《富贵》获取最新版本。")
+
+        # 检查是否过期
+        if self.is_expired():
+            QMessageBox.critical(self, "软件已更新", f"你的应用版本过低：\n请联系《富贵》获取最新版本。")
+            sys.exit(0)  # 退出程序
+
+    def is_expired(self):
+        """检查当前时间是否超过指定的截止时间"""
+        current_time = datetime.now()  # 获取当前系统时间
+        return current_time > self.expiration_date
+
+    def get_remaining_days(self):
+        """计算距离过期时间还有多少天"""
+        current_time = datetime.now()  # 获取当前系统时间
+        days_left = (self.expiration_date - current_time).days  # 计算剩余天数
+        return days_left  # 返回剩余的天数
+
+    def initUI(self):  # 初始化界面
+        self.setWindowTitle('H02会员总结')
+        self.setGeometry(100, 100, 500, 400)
+
+        # 创建账号输入框
+        self.account_input = QLineEdit(self)
+        self.account_input.setPlaceholderText('port')
+        self.account_input.setGeometry(50, 20, 400, 40)
+
+        # 创建密码输入框
+        self.entry_token = QLineEdit(self)
+        self.entry_token.setPlaceholderText('Cookie')
+        self.entry_token.setGeometry(50, 80, 400, 40)
+
+        # 创建手动保存按钮
+        self.save_button = QPushButton("保存配置", self)
+        self.save_button.setGeometry(170, 140, 160, 40)
+        self.save_button.clicked.connect(self.manual_save)
+
+        # 创建获取数据按钮
+        self.submit_button = QPushButton('获取昨天数据', self)
+        self.submit_button.setGeometry(150, 220, 200, 40)
+        self.submit_button.clicked.connect(self.print_accoun)
+
+        self.load_config()
+
+    def save_config(self, port, token):  # 保存配置到文件
+        config = ConfigParser()
+        config['USER'] = {'Port': port, 'Token': token}
+        with open('config.ini', 'w') as configfile:
+            config.write(configfile)
+
+    def load_config(self):  # 从文件加载配置
+        config = ConfigParser()
+        config.read('config.ini')
+        if 'USER' in config:
+            self.account_input.setText(config['USER']['Port'])
+            self.entry_token.setText(config['USER']['Token'])
+
+    def print_accoun(self):  # 默认获取昨日数据
+        import os, json, requests, pytz
+        from datetime import datetime, timedelta
+        from openpyxl import load_workbook
+        from PyQt5.QtWidgets import QMessageBox
+
+        # 安全转换：把字符串/None 转成 float，失败给默认值
+        def _to_float(x, default=0.0):
+            try:
+                return float(x)
+            except (TypeError, ValueError):
+                return default
+
+        try:
+            port = self.account_input.text().strip()
+            token = self.entry_token.text().strip()
+
+            # 直接获取当前印度时间
+            ydjrsj = datetime.now(pytz.timezone('Asia/Kolkata'))
+            ydzrsj = ydjrsj - timedelta(days=1)
+
+            ydzr = ydzrsj.strftime('%Y-%m-%d 02:30:00')
+            ydjr = ydjrsj.strftime('%Y-%m-%d 02:29:59')
+
+            kssj = int(datetime.strptime(ydzr, "%Y-%m-%d %H:%M:%S").timestamp())
+            jssj = int(datetime.strptime(ydjr, "%Y-%m-%d %H:%M:%S").timestamp())
+
+            # ================= 第一段：所有会员 / 注册时间 =================
+            url = f"https://{port}/api/go-gateway-internal/user/advancedGetUserListV2"  # 所有会员/注册时间
+            data = {
+                "current": 1,
+                "registerTimeFrom": kssj,
+                "registerTimeTo": jssj,
+                "selectTimeKey": 0,
+                "size": 5000
+            }
+            headers = {
+                'accept': 'application/json, text/plain, */*',
+                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                "CompanyCode": "955",
+                'content-type': 'application/json',
+                'cookie': token,
+                'loginbacktype': '3',
+                "SiteCode": "955",
+            }
+
+            # 初始化变量
+            总注册人数 = 0
+            注册有充值人数 = 0
+            充值500以上人数 = 0
+            总充值金额 = 0.0
+            充值500以上总金额 = 0.0
+            注册有盈利人数 = 0
+            注册有盈利金额 = 0.0  # 注意：这里盈利为负数，后面统一 abs
+            注册有提款人数 = 0
+            总提款金额 = 0.0
+            有充值有提款且盈利的会员人数 = 0
+            有充值有提款且盈利的盈利金额 = 0.0  # 同样后面统一 abs
+
+            response = requests.post(url, headers=headers, json=data, timeout=30)
+            if response.status_code == 200:
+                root = response.json()
+                data_block = (root.get('data') or {})
+                rows = data_block.get('data') or []
+                for dd in rows:
+                    总注册人数 += 1
+
+                    total_deposit = _to_float(dd.get('totalDeposit'))
+                    if total_deposit > 0.0:
+                        注册有充值人数 += 1
+                        总充值金额 += total_deposit
+                    if total_deposit >= 500.0:
+                        充值500以上人数 += 1
+                        充值500以上总金额 += total_deposit
+
+                    total_withdraw = _to_float(dd.get('totalWithdraw'))
+                    if total_withdraw > 0.0:
+                        注册有提款人数 += 1
+                        总提款金额 += total_withdraw
+
+                    depositWithdrawDiff = _to_float(dd.get('depositWithdrawDiff'))
+                    # 约定：输赢为负代表玩家盈利
+                    if depositWithdrawDiff < 0.0:
+                        注册有盈利人数 += 1
+                        注册有盈利金额 += depositWithdrawDiff  # 先累负数，展示时取绝对值
+
+                        if total_deposit > 0.0 and total_withdraw > 0.0:
+                            有充值有提款且盈利的会员人数 += 1
+                            有充值有提款且盈利的盈利金额 += depositWithdrawDiff
+            else:
+                QMessageBox.critical(self, "错误", f"注册数据请求失败，HTTP {response.status_code}")
+                return
+
+            # 统一转为正值用于展示
+            注册有盈利金额 = abs(注册有盈利金额)
+            有充值有提款且盈利的盈利金额 = abs(有充值有提款且盈利的盈利金额)
+
+            # ================= 第二段：运营统计 / 会员报表 =================
+            url = f"https://{port}/api/go-gateway-internal/noEncrypt/statistics/report/user_report"
+
+            盈利5000以上人数 = 0
+            优惠100以上人数 = 0
+            优惠100以上总金额 = 0.0
+            盈利5000以上订单充值金额总和 = 0.0
+            盈利5000以上总金额 = 0.0  # 这里累计为负，后面取 abs
+            盈利5000以上提现金额 = 0.0
+
+            盈利10以上人数 = 0
+            盈利10以上订单充值金额总和 = 0.0
+            盈利10以上总金额 = 0.0  # 同上
+            盈利10以上提现金额 = 0.0
+            盈利10以上有效投注金额 = 0.0
+
+            page = 1
+            limit = 1000
+            total_records = 5000  # 粗略上限，实际靠分页返回的 list 为空来终止
+
+            while (page - 1) * limit < total_records:
+                data = {
+                    "currency": "INR",
+                    "startTime": kssj,
+                    "endTime": jssj,
+                    "pageSort": {"page": page, "limit": limit}
+                }
+
+                response = requests.post(url, headers=headers, json=data, timeout=30)
+                if response.status_code != 200:
+                    break
+
+                try:
+                    response_data = response.json()
+                except json.decoder.JSONDecodeError:
+                    break
+
+                if not response_data.get('data'):
+                    break
+
+                data_list = response_data['data'].get('list', [])
+                if not data_list:
+                    break
+
+                for dd in data_list:
+                    优惠 = _to_float(dd.get('discountAmount'))
+                    if 优惠 >= 100.0:
+                        优惠100以上人数 += 1
+                        优惠100以上总金额 += 优惠
+
+                    充值金额 = _to_float(dd.get('deposit'))
+                    会员输赢 = _to_float(dd.get('depositWithdrawDiff'))  # 负数=玩家盈利
+                    提现金额 = _to_float(dd.get('withdraw'))
+                    有效投注 = _to_float(dd.get('validBet'))
+
+                    if 会员输赢 <= -5000.0:
+                        盈利5000以上人数 += 1
+                        盈利5000以上订单充值金额总和 += 充值金额
+                        盈利5000以上总金额 += 会员输赢
+                        盈利5000以上提现金额 += 提现金额
+
+                    if 会员输赢 <= -10.0:
+                        盈利10以上人数 += 1
+                        盈利10以上订单充值金额总和 += 充值金额
+                        盈利10以上总金额 += 会员输赢
+                        盈利10以上提现金额 += 提现金额
+                        盈利10以上有效投注金额 += 有效投注
+
+                page += 1
+
+            盈利5000 = abs(盈利5000以上总金额)
+            盈利10 = abs(盈利10以上总金额)
+
+            # ================= 写入 Excel =================
+            excel_file = 'h02每日总结.xlsx'  # 你的Excel路径
+            wb = load_workbook(excel_file)
+            ws = wb.active
+
+            ws['C2'] = 总注册人数
+            ws['C3'] = 注册有充值人数
+            ws['C4'] = 充值500以上人数
+            ws['C5'] = 注册有盈利人数
+            ws['C6'] = 注册有提款人数
+            ws['C7'] = 有充值有提款且盈利的会员人数
+
+            ws['E3'] = round(总充值金额, 2)
+            ws['E4'] = round(充值500以上总金额, 2)
+            ws['E5'] = round(注册有盈利金额, 2)
+            ws['E6'] = round(总提款金额, 2)
+            ws['E7'] = round(有充值有提款且盈利的盈利金额, 2)
+
+            ws['C14'] = 优惠100以上人数
+            ws['C15'] = 盈利5000以上人数
+            ws['C17'] = 盈利10以上人数
+
+            ws['E14'] = round(优惠100以上总金额, 2)
+            ws['E15'] = round(盈利5000以上订单充值金额总和, 2)
+            ws['E17'] = round(盈利10以上订单充值金额总和, 2)
+            ws['E18'] = round(盈利10以上有效投注金额, 2)
+
+            ws['G15'] = round(盈利5000, 2)
+            ws['G17'] = round(盈利10, 2)
+
+            ws['I15'] = round(盈利5000以上提现金额, 2)
+            ws['I17'] = round(盈利10以上提现金额, 2)
+
+            今天 = datetime.now()
+            昨天 = 今天 - timedelta(days=1)
+            日期 = 昨天.strftime('%Y/%m/%d')
+            ws['A4'] = 日期
+
+            wb.save(excel_file)
+            os.startfile(excel_file)
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", str(e))
+
+    def manual_save(self):  # 手动保存配置
+        port = self.account_input.text()
+        token = self.entry_token.text()
+
+        if not (port and token):
+            QMessageBox.warning(self, "输入错误", "请填写所有字段！")
+            return
+
+        self.save_config(port, token)
+        QMessageBox.information(self, "提示", "配置已保存！")
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    login_window = LoginWindow()
+    login_window.show()
+    sys.exit(app.exec_())
