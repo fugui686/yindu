@@ -1,0 +1,169 @@
+import sys
+from PyQt5.QtWidgets import QApplication, QWidget, QLineEdit, QPushButton, QMessageBox
+from configparser import ConfigParser
+import requests
+from datetime import datetime, timedelta
+from openpyxl import Workbook
+import os
+import random
+
+
+class LoginWindow(QWidget):
+    def __init__(self):
+        super().__init__()
+        self.initUI()
+
+        # 设置允许使用的截止时间 (YYYY-MM-DD HH:MM:SS)
+        self.expiration_date_str = "2027-04-18 23:59:59"  # 软件过期时间
+        self.expiration_date = datetime.strptime(self.expiration_date_str, "%Y-%m-%d %H:%M:%S")
+
+        # 检查是否需要提醒
+        remaining_days = self.get_remaining_days()
+        if remaining_days > 0 and remaining_days <= 7:
+            QMessageBox.warning(self, "软件即将更新",
+                                f"本软件将在{remaining_days}天后自动更新：\n请联系《富贵》获取最新版本。")
+
+        # 检查是否过期
+        if self.is_expired():
+            QMessageBox.critical(self, "软件已更新", f"你的应用版本过低：\n请联系《富贵》获取最新版本。")
+            sys.exit(0)  # 退出程序
+
+    def is_expired(self):
+        """检查当前时间是否超过指定的截止时间"""
+        current_time = datetime.now()  # 获取当前系统时间
+        return current_time > self.expiration_date
+
+    def get_remaining_days(self):
+        """计算距离过期时间还有多少天"""
+        current_time = datetime.now()  # 获取当前系统时间
+        days_left = (self.expiration_date - current_time).days  # 计算剩余天数
+        return days_left  # 返回剩余的天数
+
+    def initUI(self):  # 初始化界面
+        self.setWindowTitle('H02印度红包雨')
+        self.setGeometry(100, 100, 500, 300)
+
+        # 创建账号输入框
+        self.srk_port = QLineEdit(self)
+        self.srk_port.setPlaceholderText('后台域名')
+        self.srk_port.setGeometry(50, 20, 400, 40)
+
+        # 创建密码输入框
+        self.srk_token = QLineEdit(self)
+        self.srk_token.setPlaceholderText('Cookie')
+        self.srk_token.setGeometry(50, 80, 400, 40)
+
+        # 创建手动保存按钮
+        self.save_button = QPushButton("保存配置", self)
+        self.save_button.setGeometry(150, 140, 200, 40)
+        self.save_button.clicked.connect(self.manual_save)
+
+        # 创建获取数据按钮
+        self.submit_button = QPushButton('获取H02印度红包', self)
+        self.submit_button.setGeometry(150, 200, 200, 40)
+        self.submit_button.clicked.connect(self.print_accoun)
+
+        # 加载配置
+        self.load_config()
+
+    def save_config(self, port, token):  # 保存配置到文件
+        config = ConfigParser()
+        config['USER'] = {'Port': port, 'Token': token}
+        with open('config.ini', 'w') as configfile:
+            config.write(configfile)
+
+    def load_config(self):  # 从文件加载配置
+        config = ConfigParser()
+        config.read('config.ini')
+        if 'USER' in config:
+            self.srk_port.setText(config['USER']['Port'])
+            self.srk_token.setText(config['USER']['Token'])
+
+    def print_accoun(self):  # 默认获取昨日金币数据
+        try:
+            port = self.srk_port.text()
+            token = self.srk_token.text()
+
+            if not port or not token:
+                QMessageBox.warning(self, "输入错误", "请确保所有输入框都已填写！")
+                return
+
+            # 请求地址
+            url = f'https://{port}/api/go-gateway-internal/user/advancedGetUserListV2'  # 报表统计/日运营报表
+
+            # 请求头
+            headers = {
+                'accept': 'application/json, text/plain, */*',
+                'accept-language': 'zh-CN,zh;q=0.9,en;q=0.8',
+                'companycode': '955',
+                'content-type': 'application/json',
+                "cookie": token,
+                'loginbacktype': '3',
+                'sitecode': '955',
+            }
+
+            # 请求参数
+            data = {
+                'selectTimeKey': 0,
+                'accountTypes': [],
+                'onlineStatus': 1,
+                'current': 1,
+                'size': 1000,
+            }
+
+            # 发送请求
+            response = requests.post(url, headers=headers, json=data)
+            if response.status_code == 200:
+                data_list = response.json()
+                data = data_list['data'].get('data', [])
+
+                wb = Workbook()
+                ws = wb.active
+                ws.append(['会员ID', '会员账号', '奖励金额(必填)', '稽核倍数(必填)', '前台备注', '后台备注'])
+
+                for item in data:
+                    会员ID = item.get('useridx')
+                    会员账号 = item.get('username')
+
+                    充值总额 = item.get('totalDeposit', 0)
+
+                    # 转成数字（float 或 int 都可以）
+                    try:
+                        充值总额 = float(充值总额)
+                    except (TypeError, ValueError):
+                        充值总额 = 0
+
+                    if 充值总额 > 0:
+                        彩金 = random.randint(3, 8)
+                        稽核倍数 = 1
+                        前台备注 = 'lucky red envelope'
+                        后台备注 = '每日红包雨'
+                        ws.append([会员ID, 会员账号, 彩金, 稽核倍数, 前台备注, 后台备注])
+
+                # 保存文件到桌面
+                rq = datetime.now().strftime('%H时%M分')
+                desktop_path = os.path.join(os.path.expanduser('~'), 'Desktop')
+                file_path = os.path.join(desktop_path, f'H02红包雨{rq}.xlsx')
+                wb.save(file_path)
+                os.startfile(file_path)
+
+        except Exception as e:
+            QMessageBox.critical(self, "错误", str(e))
+
+    def manual_save(self):  # 手动保存配置
+        port = self.srk_port.text()
+        token = self.srk_token.text()
+
+        if not (port and token):
+            QMessageBox.warning(self, "输入错误", "请填写所有字段！")
+            return
+
+        self.save_config(port, token)
+        QMessageBox.information(self, "提示", "配置已保存！")
+
+
+if __name__ == '__main__':
+    app = QApplication(sys.argv)
+    login_window = LoginWindow()
+    login_window.show()
+    sys.exit(app.exec_())
